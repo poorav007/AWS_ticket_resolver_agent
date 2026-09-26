@@ -65,12 +65,16 @@ Start HTTP MCP server with public tunnel:
 
 Useful URLs
 -----------
-- Local MCP endpoint:
-  http://127.0.0.1:8080/mcp
+- Local MCP endpoint (OpenCode stdio):
+  configured in opencode.json — no URL needed
 
-- Public tunnel endpoint:
+- Local HTTP endpoint (TrueForge same machine):
+  http://127.0.0.1:8080/mcp
+  Start with: ./scripts/serve_for_trueforge.sh
+
+- Public tunnel endpoint (remote TrueForge only, requires cloudflared + network):
   https://<random>.trycloudflare.com/mcp
-  (printed when you run ./scripts/serve_with_tunnel.sh)
+  Start with: ./scripts/serve_with_tunnel.sh
 
 - OpenCode config schema:
   https://opencode.ai/config.json

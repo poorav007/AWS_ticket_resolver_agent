@@ -7,7 +7,7 @@
       "command": [".venv/bin/python", "mcp-server/server.py"],
       "cwd": ".",
       "environment": {
-        "TICKET_RESOLVER_BACKEND": "sim"
+        "TICKET_RESOLVER_BACKEND": "boto3"
       },
       "timeout": 30000
     }

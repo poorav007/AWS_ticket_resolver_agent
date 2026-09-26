@@ -61,6 +61,27 @@ class AWSBackend(ABC):
             ResourceNotFound: if the cluster or service does not exist.
         """
 
+    # -- DynamoDB ---------------------------------------------------------
+    @abstractmethod
+    def describe_dynamodb_table(self, table_name: str) -> dict[str, Any]:
+        """Describe a DynamoDB table (read-only).
+
+        Raises:
+            ResourceNotFound: if the table does not exist.
+        """
+
+    @abstractmethod
+    def update_dynamodb_table(self, table_name: str, read_capacity: int, write_capacity: int) -> dict[str, Any]:
+        """Increase the provisioned read/write capacity of a DynamoDB table.
+
+        This is a *disruptive* operation (modifies live infrastructure) and
+        must only be reached through the approval-gated remediation tool.
+
+        Raises:
+            ResourceNotFound: if the table does not exist.
+            RemediationNotPermitted: if remediation is disabled.
+        """
+
     # -- CloudWatch Logs --------------------------------------------------
     @abstractmethod
     def list_log_groups(self, prefix: str = "") -> list[str]:

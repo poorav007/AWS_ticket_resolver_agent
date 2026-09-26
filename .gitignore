@@ -19,3 +19,6 @@ state/
 .DS_Store
 .idea/
 .vscode/
+
+# OpenCode service credentials (contains a password)
+service.json

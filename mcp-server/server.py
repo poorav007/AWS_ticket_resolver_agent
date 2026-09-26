@@ -62,6 +62,7 @@ _backend = get_backend(CONFIG)
 
 APP_NAMESPACE = "TicketResolver/App"
 ECS_NAMESPACE = "AWS/ECS"
+DYNAMODB_NAMESPACE = "AWS/DynamoDB"
 
 # Catalog of metric shortcuts so the agent can ask for "error rate" without
 # memorising CloudWatch namespace/metric/dimension triples.
@@ -101,6 +102,12 @@ METRIC_CATALOG: dict[str, dict[str, Any]] = {
         "metric": "LatencyP95",
         "unit": "Milliseconds",
         "dimensions": lambda cluster, service: {"ServiceName": service},
+    },
+    "dynamodb_throttled": {
+        "namespace": DYNAMODB_NAMESPACE,
+        "metric": "ThrottledRequests",
+        "unit": "Count",
+        "dimensions": lambda cluster, service: {"TableName": service},
     },
 }
 
@@ -578,6 +585,7 @@ def propose_remediation(
     rationale: str,
     expected_impact: str = "",
     evidence: list[str] | None = None,
+    table_name: str = "",
 ) -> dict[str, Any]:
     """Record a remediation proposal and return an approval token.
 
@@ -590,14 +598,15 @@ def propose_remediation(
 
     Args:
         ticket_id: Ticket this remediation belongs to.
-        action: Must be ``force_new_deployment`` - the only supported action.
+        action: ``force_new_deployment`` (ECS) or ``update_dynamodb_table`` (DynamoDB).
         cluster: Target ECS cluster.
-        service: Target ECS service.
+        service: Target ECS service (or DynamoDB table name when action is DynamoDB).
         rationale: Why this action will fix the incident. Cite evidence.
         expected_impact: What will be disrupted and for roughly how long.
         evidence: Verbatim supporting observations (log lines, metric values).
+        table_name: Required for DynamoDB actions; the name of the table to update.
     """
-    supported = {"force_new_deployment"}
+    supported = {"force_new_deployment", "update_dynamodb_table"}
     if action not in supported:
         return fail(
             "Unsupported action",
@@ -610,6 +619,11 @@ def propose_remediation(
             "Provide a rationale of at least 10 characters citing the evidence "
             "that supports this action.",
         )
+    if action == "update_dynamodb_table" and not table_name:
+        return fail(
+            "Table name required",
+            "table_name is required when action is 'update_dynamodb_table'.",
+        )
 
     try:
         ticket = _tickets.get(ticket_id)
@@ -618,7 +632,10 @@ def propose_remediation(
 
     # Validate the target now so approval is never granted for a typo.
     try:
-        _backend.describe_ecs_service(cluster, service)
+        if action == "update_dynamodb_table":
+            _backend.describe_dynamodb_table(table_name)  # read-only probe
+        else:
+            _backend.describe_ecs_service(cluster, service)
     except ResourceNotFound as exc:
         return fail("Target not found", str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -632,6 +649,7 @@ def propose_remediation(
         "action": action,
         "cluster": cluster,
         "service": service,
+        "table_name": table_name,
         "rationale": rationale,
         "expectedImpact": expected_impact,
         "evidence": list(evidence or []),
@@ -718,9 +736,16 @@ def execute_remediation(proposal_id: str, approved_by: str) -> dict[str, Any]:
         )
 
     cluster, service = proposal["cluster"], proposal["service"]
+    action = proposal["action"]
+    table_name = proposal.get("table_name", "")
 
     try:
-        result = _backend.force_new_deployment(cluster, service)
+        if action == "update_dynamodb_table":
+            read_cap = int(proposal.get("newReadCapacity", 100))
+            write_cap = int(proposal.get("newWriteCapacity", 100))
+            result = _backend.update_dynamodb_table(table_name, read_cap, write_cap)
+        else:
+            result = _backend.force_new_deployment(cluster, service)
     except RemediationNotPermitted as exc:
         return fail("Remediation not permitted", str(exc))
     except ResourceNotFound as exc:
@@ -731,7 +756,7 @@ def execute_remediation(proposal_id: str, approved_by: str) -> dict[str, Any]:
         proposal["error"] = f"{type(exc).__name__}: {exc}"
         store[proposal_id] = proposal
         _save_proposals(store)
-        return tool_error(exc, f"forcing a new deployment of {service!r}")
+        return tool_error(exc, f"executing {action} on {service!r}")
 
     executed_at = _now()
     proposal.update(
@@ -754,19 +779,22 @@ def execute_remediation(proposal_id: str, approved_by: str) -> dict[str, Any]:
     except (OSError, ValueError) as exc:
         log.warning("Could not update ticket status: %s", exc)
 
+    verify_tool = "verify_service"
+    verify_target = {"cluster": cluster, "service": service, "since": result.get("acceptedAt")}
+    if action == "update_dynamodb_table":
+        verify_tool = "verify_dynamodb"
+        verify_target = {"table": table_name, "since": result.get("acceptedAt")}
+
     return ok(
         {
             **proposal,
             "verificationRequired": True,
-            "verifyWith": {
-                "tool": "verify_service",
-                "cluster": cluster,
-                "service": service,
-                "since": result.get("acceptedAt"),
-            },
+            "verifyWith": verify_tool,
+            **verify_target,
             "warning": (
                 "AWS accepted the request. The incident is NOT yet resolved. "
-                "Call verify_service and only report resolution if it verifies."
+                "Call verify_service (or verify_dynamodb) and only report "
+                "resolution if it verifies."
             ),
         }
     )
@@ -1025,6 +1053,100 @@ def update_ticket(
         return tool_error(exc, f"updating ticket {ticket_id!r}")
 
     return ok(ticket.to_dict())
+
+
+# -- DynamoDB verification ---------------------------------------------------
+@server.tool(
+    name="verify_dynamodb",
+    title="Verify whether a DynamoDB remediation actually fixed the throttling",
+    annotations=ToolAnnotations(**READ_ONLY),
+)
+def verify_dynamodb(
+    table: str,
+    since: str = "",
+    minutes: int = 10,
+    max_throttled: int = 5,
+) -> dict[str, Any]:
+    """Check whether DynamoDB throttling has stopped after remediation.
+
+    This independently re-observes:
+      1. ``throttledRequests`` - zero (or near-zero) ThrottledRequests after ``since``
+      2. ``tableExists``      - the table is still reachable
+
+    Args:
+        table: DynamoDB table name.
+        since: ISO timestamp marking the start of the remediation.
+        minutes: Window used for the metric check.
+        max_throttled: Allowed ThrottledRequests after ``since``. Default 5.
+    """
+    if not table:
+        return fail("Missing input", "table is required.")
+
+    checks: list[dict[str, Any]] = []
+
+    # -- 1: throttled requests after boundary -----------------------------
+    try:
+        series = _backend.get_metric_series(
+            namespace=DYNAMODB_NAMESPACE,
+            metric_name="ThrottledRequests",
+            dimensions={"TableName": table},
+            minutes=max(1, minutes),
+        )
+        latest = series.latest
+        checks.append(
+            {
+                "check": "throttledRequests",
+                "passed": latest is not None and latest <= max_throttled,
+                "detail": f"ThrottledRequests latest={latest} (limit {max_throttled})",
+            }
+        )
+    except ResourceNotFound as exc:
+        checks.append(
+            {"check": "throttledRequests", "passed": False, "detail": f"no metric data: {exc}"}
+        )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(
+            {"check": "throttledRequests", "passed": False, "detail": f"{type(exc).__name__}: {exc}"}
+        )
+
+    # -- 2: table still reachable -----------------------------------------
+    try:
+        _backend.describe_dynamodb_table(table)  # read-only probe
+        checks.append(
+            {"check": "tableExists", "passed": True, "detail": f"table {table!r} is reachable"}
+        )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(
+            {"check": "tableExists", "passed": False, "detail": f"{type(exc).__name__}: {exc}"}
+        )
+
+    failed = [c["check"] for c in checks if not c["passed"]]
+    verified = not failed and bool(checks)
+
+    return ok(
+        {
+            "table": table,
+            "verified": verified,
+            "verdict": "VERIFIED" if verified else "NOT_VERIFIED",
+            "sinceBoundary": _parse_iso(since) if since else None,
+            "checksRun": len(checks),
+            "checksPassed": len(checks) - len(failed),
+            "failedChecks": failed,
+            "checks": checks,
+            "summary": (
+                f"All {len(checks)} verification signals passed. DynamoDB throttling is resolved."
+                if verified
+                else f"{len(failed)} of {len(checks)} signals failed: {', '.join(failed)}. "
+                "The incident is NOT resolved."
+            ),
+            "guidance": (
+                "You may now mark the ticket RESOLVED."
+                if verified
+                else "Do not report resolution. Investigate the failed signals and "
+                "either wait for the capacity update to propagate or escalate to a human."
+            ),
+        }
+    )
 
 
 # --------------------------------------------------------------------------

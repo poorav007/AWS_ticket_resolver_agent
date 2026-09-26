@@ -1,18 +1,33 @@
 {
   "id": "INC-1002",
-  "title": "Order API latency spike and high CPU",
-  "severity": "SEV-3",
-  "service": "order-api",
+  "title": "Payment transactions DynamoDB table throttling requests",
+  "severity": "SEV-2",
+  "service": "payment-api",
   "cluster": "hackathon-cluster",
-  "logGroup": "/ecs/order-api",
+  "dynamodbTable": "payments-transactions",
   "status": "OPEN",
-  "reportedAt": "2026-09-26T06:30:00+00:00",
-  "description": "Order API p95 latency has tripled over the last hour and CPU utilization is above 90%. Checkout conversions are dropping. No deploy has been made in the last four hours.",
+  "reportedAt": "2026-09-26T09:00:00+00:00",
+  "description": "The payments-transactions DynamoDB table is returning ProvisionedThroughputExceededException errors. The payment API is failing with 500 errors when writing transaction records.",
   "symptoms": [
-    "high cpu",
-    "cpu utilization",
-    "latency",
-    "slow responses"
+    "ProvisionedThroughputExceededException in DynamoDB logs",
+    "HTTP 500 errors on /api/v1/payments/charge",
+    "Error rate increasing",
+    "CloudWatch ThrottledRequests metric elevated"
   ],
-  "runbook": "high-cpu"
+  "runbook": "dynamodb-throttling",
+  "updatedAt": "2026-09-26T09:00:00+00:00",
+  "history": [],
+  "awsResources": {
+    "dynamodbTable": "payments-transactions",
+    "tableArn": "arn:aws:dynamodb:us-east-1:607987767231:table/payments-transactions"
+  },
+  "metrics": {
+    "namespace": "AWS/DynamoDB",
+    "metric": "ThrottledRequests",
+    "dimensions": {
+      "TableName": "payments-transactions"
+    },
+    "currentValue": 847,
+    "baselineValue": 12
+  }
 }

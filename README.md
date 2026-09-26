@@ -91,7 +91,7 @@ python3.13 -m venv .venv
 │       ├── boto3_backend.py  # real AWS
 │       └── sim.py            # simulated AWS account
 ├── tickets/                  # INC-1001.json, INC-1002.json
-├── runbooks/                 # api-500, high-cpu, database-timeout, service-unhealthy
+├── runbooks/                 # api-500, high-cpu, database-timeout, service-unhealthy, dynamodb-throttling
 ├── scripts/
 │   ├── test_workflow.py      # end-to-end lifecycle test
 │   ├── reset_demo.py         # replay the incident
@@ -119,11 +119,12 @@ a naming convention.
 | `get_ecs_deployments` | read | Deployment history for correlation |
 | `list_log_groups` | read | Discover log group names |
 | `get_recent_logs` | read | Recent events, filterable, length-capped |
-| `get_cloudwatch_metrics` | read | `cpu`/`memory`/`errors`/`requests`/`latency` |
+| `get_cloudwatch_metrics` | read | `cpu`/`memory`/`errors`/`requests`/`latency`/`dynamodb_throttled` |
 | `get_runbook` | read | Runbooks matched to a ticket |
 | `propose_remediation` | **write** | Records a plan; mutates nothing |
 | `execute_remediation` | **destructive** | Runs an *approved* plan |
 | `verify_service` | read | Multi-signal proof the incident is over |
+| `verify_dynamodb` | read | DynamoDB throttling proof after remediation |
 | `update_ticket` | write | Status + resolution record |
 
 Every tool returns `{"success": true, "data": {...}}` or
@@ -145,7 +146,8 @@ Two independent layers, either of which alone blocks a disruptive action:
 `propose_remediation` performs no AWS mutation. It validates the target,
 requires a rationale of real substance, and returns a token. Only then, with a
 named human approver, can execution proceed. A second execution of the same
-proposal is refused.
+proposal is refused. Supports both `forceNewDeployment` (ECS) and
+`update_dynamodb_table` (DynamoDB).
 
 ## Why verification is separate
 
@@ -180,15 +182,14 @@ Selected by `TICKET_RESOLVER_BACKEND`:
 | `boto3` | Real AWS; fails loudly without credentials |
 | `sim` | Simulated account only |
 
-The simulated account reproduces the INC-1001 scenario: `payment-api` ships a
-build missing `GATEWAY_API_KEY`, tasks crash-loop, CloudWatch fills with 500s,
-and the deployment trips the ECS circuit breaker. State lives in
-`state/simulated-aws.json` and persists across restarts, so *before* and
-*after* remediation are genuinely different observations. The running server
-notices external changes to that file, so `reset_demo.py` works mid-session.
+The simulated account reproduces two demo scenarios:
 
-**The agent is instructed to label simulated evidence as synthetic.** Point it
-at real AWS when you have credentials.
+- **INC-1001**: `payment-api` ships a build missing `GATEWAY_API_KEY`, tasks crash-loop, CloudWatch fills with 500s, and the deployment trips the ECS circuit breaker.
+- **INC-1002**: `payments-transactions` DynamoDB table has insufficient provisioned capacity, returning `ProvisionedThroughputExceededException` and causing HTTP 500 errors.
+
+State lives in `state/simulated-aws.json` and persists across restarts, so *before* and *after* remediation are genuinely different observations. The running server notices external changes to that file, so `reset_demo.py` works mid-session.
+
+**The agent is instructed to label simulated evidence as synthetic.** Point it at real AWS when you have credentials.
 
 ### Real AWS
 
@@ -221,22 +222,29 @@ Attach to the role the agent assumes. No `AdministratorAccess`.
         "logs:FilterLogEvents",
         "cloudwatch:GetMetricData",
         "cloudwatch:GetMetricStatistics",
-        "cloudwatch:ListMetrics"
+        "cloudwatch:ListMetrics",
+        "dynamodb:DescribeTable",
+        "dynamodb:ListTables"
       ],
       "Resource": "*"
     },
     {
       "Sid": "ControlledRemediation",
       "Effect": "Allow",
-      "Action": ["ecs:UpdateService"],
-      "Resource": "arn:aws:ecs:REGION:ACCOUNT:service/hackathon-cluster/*"
+      "Action": [
+        "ecs:UpdateService",
+        "dynamodb:UpdateTable"
+      ],
+      "Resource": [
+        "arn:aws:ecs:REGION:ACCOUNT:service/hackathon-cluster/*",
+        "arn:aws:dynamodb:REGION:ACCOUNT:table/payments-transactions"
+      ]
     }
   ]
 }
 ```
 
-`ecs:UpdateService` is the only write permission, and it is scoped to the one
-cluster. There is no delete anywhere in the codebase.
+`ecs:UpdateService` and `dynamodb:UpdateTable` are the only write permissions, each scoped to the specific resource. There is no delete anywhere in the codebase.
 
 ---
 
@@ -266,39 +274,48 @@ To demo the gate, set `TICKET_RESOLVER_ALLOW_REMEDIATION=false`; every
 TrueForge registers MCP servers **by URL** under *Settings → Connectors*; it
 does not spawn local stdio processes.
 
-Its connector also refuses loopback and private addresses — registering
-`http://127.0.0.1:8080/mcp` fails with `Outbound URL blocked for host
-"127.0.0.1"`. That is standard SSRF protection in hosted agent platforms, not a
-fault in this server. The fix is to give it a public URL:
+### Preferred: Local HTTP server (same machine)
+
+If TrueForge is running on the same machine as the MCP server, use the
+local HTTP transport:
+
+```bash
+./scripts/serve_for_trueforge.sh
+```
+
+Then in TrueForge: *Settings → Connectors → Add MCP Server*
+- **URL:** `http://127.0.0.1:8080/mcp`
+- **Auth:** No auth
+
+> If TrueForge's connector rejects `127.0.0.1` with `Outbound URL blocked`,
+> you are running TrueForge in a hosted/remote environment (not the same
+> machine). See the tunnel option below.
+
+### Optional: Public HTTPS tunnel (remote TrueForge)
+
+If TrueForge is hosted remotely and rejects loopback/private addresses,
+you can expose the server via a public HTTPS tunnel. This requires `cloudflared`
+and a working outbound network connection. **This path is NOT required for
+development or local demos.**
 
 ```bash
 brew install cloudflared      # once
 ./scripts/serve_with_tunnel.sh
 ```
 
-That starts the MCP server, opens a public HTTPS tunnel, and prints the URL:
+That starts the MCP server, opens a public HTTPS tunnel, and prints a URL
+similar to `https://<random>.trycloudflare.com/mcp`.
 
-```
-Public URL : https://<random>.trycloudflare.com/mcp
-Auth       : No auth
-```
-
-In TrueForge: **Settings → Connectors → Add MCP Server** → paste the URL, auth
-**No auth**. Then create the agent, attach the `ticket-resolver-aws` server,
-and use [`AGENTS.md`](AGENTS.md) as the agent instructions. In the agent's
-tool-approval settings, mark `execute_remediation` and `propose_remediation` as
-requiring approval.
+In TrueForge: *Settings → Connectors → Add MCP Server* → paste the URL,
+auth **No auth**. Then create the agent, attach the `ticket-resolver-aws`
+server, and use [`AGENTS.md`](AGENTS.md) as the agent instructions. In the
+agent's tool-approval settings, mark `execute_remediation` and
+`propose_remediation` as requiring approval.
 
 > ⚠️ The tunnel exposes the server to the public internet while it runs. The URL
 > is random and unguessable, but anyone holding it can invoke the tools,
 > including the approval-gated remediation. Run it only for the demo, and stop
 > it afterwards with Ctrl-C.
-
-To run the server without a tunnel (e.g. from a machine on the same network):
-
-```bash
-./scripts/serve_for_trueforge.sh    # binds 127.0.0.1
-```
 
 ---
 

@@ -58,12 +58,12 @@ async def main() -> int:
         names = sorted(t.name for t in tools.tools)
         print(f"\nConnected. {len(names)} tools exposed:\n  {', '.join(names)}\n")
 
-        check("tools exposed", len(names) >= 10, f"{len(names)} tools")
+        check("tools exposed", len(names) >= 11, f"{len(names)} tools")
         for required in (
             "get_ticket", "get_ecs_services", "get_ecs_service_health",
             "get_ecs_deployments", "get_recent_logs", "get_cloudwatch_metrics",
             "propose_remediation", "execute_remediation", "verify_service",
-            "update_ticket",
+            "verify_dynamodb", "update_ticket",
         ):
             check(f"tool {required}", required in names)
 
@@ -210,6 +210,78 @@ async def main() -> int:
         }))
         check("ticket resolved", resolved.get("data", {}).get("status") == "RESOLVED",
               resolved.get("data", {}).get("status", ""))
+
+        # -- 8b. DynamoDB scenario (INC-1002) -----------------------
+        print("\n8b. DynamoDB throttling scenario (INC-1002)")
+        dyn_ticket = as_dict(await client.call_tool("get_ticket", {"ticket_id": "INC-1002"}))
+        check("DynamoDB ticket fetched", dyn_ticket.get("success") is True)
+        check("DynamoDB ticket targets payments-transactions",
+              dyn_ticket.get("data", {}).get("dynamodbTable") == "payments-transactions",
+              str(dyn_ticket.get("data", {}).get("dynamodbTable")))
+
+        # Verify throttled metric is elevated before remediation
+        dyn_metrics = as_dict(await client.call_tool(
+            "get_cloudwatch_metrics",
+            {"metric": "dynamodb_throttled", "service": "payments-transactions", "minutes": 30}))
+        check("DynamoDB throttled metric elevated",
+              (dyn_metrics.get("data", {}).get("latest") or 0) > 0,
+              f"latest={dyn_metrics.get('data', {}).get('latest')}")
+
+        # Propose DynamoDB capacity increase
+        dyn_proposal = as_dict(await client.call_tool("propose_remediation", {
+            "ticket_id": "INC-1002",
+            "action": "update_dynamodb_table",
+            "cluster": "hackathon-cluster",
+            "service": "payment-api",
+            "table_name": "payments-transactions",
+            "rationale": "ThrottledRequests metric at 847 exceeds provisioned capacity. Increasing read and write capacity to 100.",
+            "expected_impact": "No downtime; capacity update applies in seconds (~1 minute to propagate).",
+            "evidence": ["ThrottledRequests latest=847, baseline=12"],
+        }))
+        check("DynamoDB proposal created", dyn_proposal.get("success") is True)
+        dyn_pid = dyn_proposal.get("data", {}).get("proposalId", "")
+        check("DynamoDB proposal pending approval",
+              dyn_proposal.get("data", {}).get("status") == "PENDING_APPROVAL", dyn_pid)
+
+        # Verify BEFORE remediation (must NOT verify)
+        dyn_no_verify = as_dict(await client.call_tool("verify_dynamodb", {
+            "table": "payments-transactions", "minutes": 10}))
+        check("pre-remediation DynamoDB NOT verified",
+              dyn_no_verify.get("data", {}).get("verified") is False,
+              ", ".join(dyn_no_verify.get("data", {}).get("failedChecks", [])))
+
+        # Execute approved DynamoDB remediation
+        dyn_executed = as_dict(await client.call_tool(
+            "execute_remediation", {"proposal_id": dyn_pid, "approved_by": "oncall@example.com"}))
+        check("DynamoDB remediation executed", dyn_executed.get("success") is True,
+              str(dyn_executed.get("data", {}).get("newReadCapacity", "")) + "/" +
+              str(dyn_executed.get("data", {}).get("newWriteCapacity", "")))
+        check("DynamoDB verification flagged required",
+              dyn_executed.get("data", {}).get("verificationRequired") is True)
+
+        # Verify AFTER remediation (must verify)
+        dyn_after = as_dict(await client.call_tool("verify_dynamodb", {
+            "table": "payments-transactions", "since": dyn_executed.get("data", {}).get("executedAt"),
+            "minutes": 10}))
+        check("post-remediation DynamoDB VERIFIED",
+              dyn_after.get("data", {}).get("verified") is True,
+              ", ".join(dyn_after.get("data", {}).get("failedChecks", [])))
+
+        # Resolve DynamoDB ticket
+        dyn_resolved = as_dict(await client.call_tool("update_ticket", {
+            "ticket_id": "INC-1002", "status": "RESOLVED",
+            "note": "Increased payments-transactions DynamoDB provisioned capacity to 100 read / 100 write.",
+            "resolution": {
+                "rootCause": "DynamoDB table payments-transactions had insufficient provisioned capacity (5 RCU / 5 WCU), causing ProvisionedThroughputExceededException.",
+                "remediation": "update_dynamodb_table",
+                "newReadCapacity": 100,
+                "newWriteCapacity": 100,
+                "verifiedBy": "verify_dynamodb",
+            },
+        }))
+        check("DynamoDB ticket resolved",
+              dyn_resolved.get("data", {}).get("status") == "RESOLVED",
+              dyn_resolved.get("data", {}).get("status", ""))
 
         # -- 9. regressions -----------------------------------------
         # These lock in bugs found during live testing.

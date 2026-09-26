@@ -41,7 +41,7 @@ class Config:
     # "boto3"   -> always use real AWS (fail loudly if creds are missing)
     # "sim"     -> always use the built-in simulated account
     backend: str = field(default_factory=lambda: os.environ.get(
-        "TICKET_RESOLVER_BACKEND", "auto"
+        "TICKET_RESOLVER_BACKEND", "boto3"
     ).strip().lower())
 
     region: str = field(default_factory=lambda: os.environ.get(

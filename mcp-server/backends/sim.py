@@ -35,6 +35,14 @@ TASK_DEF_OLD = "arn:aws:ecs:us-east-1:000000000000:task-definition/payment-api:4
 TASK_DEF_BAD = "arn:aws:ecs:us-east-1:000000000000:task-definition/payment-api:43"
 TASK_DEF_FIXED = "arn:aws:ecs:us-east-1:000000000000:task-definition/payment-api:44"
 LOG_GROUP = "/ecs/payment-api"
+DYNAMODB_TABLE = "payments-transactions"
+DYNAMODB_NAMESPACE = "AWS/DynamoDB"
+
+# DynamoDB provisioned capacity: initially low (causing throttling), raised after remediation.
+DYNAMODB_INITIAL_READ_CAPACITY = 5
+DYNAMODB_INITIAL_WRITE_CAPACITY = 5
+DYNAMODB_REMEDIATED_READ_CAPACITY = 100
+DYNAMODB_REMEDIATED_WRITE_CAPACITY = 100
 
 # How long ago (at state creation) the bad deploy shipped and broke the service.
 _BAD_DEPLOY_AGE_MIN = 24
@@ -136,7 +144,16 @@ class SimulatedBackend(AWSBackend):
             "createdAt": _iso(now),
             "cluster": CLUSTER,
             "remediatedAt": None,
+            "dynamodbRemediatedAt": None,
             "remediationCount": 0,
+            "dynamodbTable": DYNAMODB_TABLE,
+            "dynamodbCapacity": {
+                "readCapacity": DYNAMODB_INITIAL_READ_CAPACITY,
+                "writeCapacity": DYNAMODB_INITIAL_WRITE_CAPACITY,
+                "provisionedReadCapacity": DYNAMODB_INITIAL_READ_CAPACITY,
+                "provisionedWriteCapacity": DYNAMODB_INITIAL_WRITE_CAPACITY,
+                "throttledRequests": 847,
+            },
             "deployments": {
                 "bad": {
                     "id": "ecs-svc/9182736450",
@@ -213,6 +230,10 @@ class SimulatedBackend(AWSBackend):
     def _remediated_at(self) -> datetime | None:
         return _parse(self._state.get("remediatedAt"))
 
+    @property
+    def _dynamodb_remediated_at(self) -> datetime | None:
+        return _parse(self._state.get("dynamodbRemediatedAt"))
+
     @staticmethod
     def _minute(dt: datetime) -> datetime:
         return dt.replace(second=0, microsecond=0)
@@ -227,6 +248,13 @@ class SimulatedBackend(AWSBackend):
         if self._minute(when) < self._minute(self._incident_start):
             return True
         remediated = self._remediated_at
+        return remediated is not None and self._minute(when) >= self._minute(remediated)
+
+    def _is_dynamodb_healthy(self, when: datetime) -> bool:
+        """Was DynamoDB healthy at ``when``? Uses the DynamoDB-specific remediation timestamp."""
+        if self._minute(when) < self._minute(self._incident_start):
+            return True
+        remediated = self._dynamodb_remediated_at
         return remediated is not None and self._minute(when) >= self._minute(remediated)
 
     # -- ECS --------------------------------------------------------------
@@ -374,6 +402,70 @@ class SimulatedBackend(AWSBackend):
             ),
         }
 
+    # -- DynamoDB -------------------------------------------------------
+    def describe_dynamodb_table(self, table_name: str) -> dict[str, Any]:
+        self._sync()
+        if not table_name:
+            raise ValueError("table_name is required")
+        if table_name != DYNAMODB_TABLE:
+            raise ResourceNotFound(
+                f"DynamoDB table {table_name!r} not found. "
+                f"Available: [{DYNAMODB_TABLE}]"
+            )
+        cap = self._state["dynamodbCapacity"]
+        return {
+            "tableName": table_name,
+            "tableStatus": "ACTIVE",
+            "provisionedReadCapacity": cap["provisionedReadCapacity"],
+            "provisionedWriteCapacity": cap["provisionedWriteCapacity"],
+            "throttledRequests": cap["throttledRequests"],
+        }
+
+    def update_dynamodb_table(self, table_name: str, read_capacity: int, write_capacity: int) -> dict[str, Any]:
+        self._sync()
+        if not self._config.allow_remediation:
+            raise RemediationNotPermitted(
+                "Remediation is disabled. Set TICKET_RESOLVER_ALLOW_REMEDIATION=true "
+                "to enable it."
+            )
+        if not table_name:
+            raise ValueError("table_name is required")
+        if table_name != DYNAMODB_TABLE:
+            raise ResourceNotFound(
+                f"DynamoDB table {table_name!r} not found. "
+                f"Available: [{DYNAMODB_TABLE}]"
+            )
+        if read_capacity < 1 or write_capacity < 1:
+            raise ValueError("read_capacity and write_capacity must be positive integers.")
+
+        now = datetime.now(timezone.utc)
+        self._state["dynamodbCapacity"]["provisionedReadCapacity"] = read_capacity
+        self._state["dynamodbCapacity"]["provisionedWriteCapacity"] = write_capacity
+        self._state["dynamodbCapacity"]["readCapacity"] = read_capacity
+        self._state["dynamodbCapacity"]["writeCapacity"] = write_capacity
+        self._state["dynamodbCapacity"]["throttledRequests"] = 0
+        self._state["dynamodbCapacity"]["remediatedAt"] = _iso(now)
+        self._state["dynamodbRemediatedAt"] = _iso(now)
+        self._save(self._state)
+
+        return {
+            "backend": self.name,
+            "table": table_name,
+            "action": "update_dynamodb_table",
+            "disruptive": True,
+            "acceptedAt": _iso(now),
+            "previousReadCapacity": DYNAMODB_INITIAL_READ_CAPACITY,
+            "previousWriteCapacity": DYNAMODB_INITIAL_WRITE_CAPACITY,
+            "newReadCapacity": read_capacity,
+            "newWriteCapacity": write_capacity,
+            "throttledRequestsAfter": 0,
+            "note": (
+                "DynamoDB accepted the capacity update. This does NOT mean "
+                "the incident is resolved - verify ThrottledRequests and "
+                "application error rate."
+            ),
+        }
+
     # -- CloudWatch Logs --------------------------------------------------
     def list_log_groups(self, prefix: str = "") -> list[str]:
         self._sync()
@@ -508,7 +600,8 @@ class SimulatedBackend(AWSBackend):
 
         cursor = start.replace(second=0, microsecond=0)
         while cursor <= now:
-            healthy = self._is_healthy(cursor)
+            is_dynamo = namespace == DYNAMODB_NAMESPACE
+            healthy = self._is_dynamodb_healthy(cursor) if is_dynamo else self._is_healthy(cursor)
             base = healthy_value if healthy else broken_value
             # Stable wobble (crc32, not hash()) so repeated calls - and
             # repeated server restarts - return identical telemetry.
@@ -543,6 +636,8 @@ class SimulatedBackend(AWSBackend):
             (APP_NAMESPACE, "RequestCount"): ("Count", 120.0, 118.0),
             (APP_NAMESPACE, "ErrorCount5xx"): ("Count", 0.0, 96.0),
             (APP_NAMESPACE, "LatencyP95"): ("Milliseconds", 210.0, 1180.0),
+            # DynamoDB throttling: broken = high throttled requests, healthy = 0
+            ("AWS/DynamoDB", "ThrottledRequests"): ("Count", 0.0, 847.0),
         }
 
 

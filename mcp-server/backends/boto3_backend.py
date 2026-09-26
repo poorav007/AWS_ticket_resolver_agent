@@ -308,6 +308,68 @@ class Boto3Backend(AWSBackend):
             points=points,
         )
 
+    # -- DynamoDB ---------------------------------------------------------
+    def describe_dynamodb_table(self, table_name: str) -> dict[str, Any]:
+        if not table_name:
+            raise ValueError("table_name is required")
+        dynamodb = self.client("dynamodb")
+        try:
+            response = dynamodb.describe_table(TableName=table_name)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ResourceNotFoundException":
+                raise ResourceNotFound(
+                    f"DynamoDB table {table_name!r} not found."
+                ) from exc
+            raise self._translate(exc, f"describe DynamoDB table {table_name!r}") from exc
+        table = response.get("Table", {})
+        return {
+            "tableName": table_name,
+            "tableStatus": table.get("TableStatus", "UNKNOWN"),
+            "provisionedReadCapacity": table.get("ProvisionedThroughput", {}).get("ReadCapacityUnits", 0),
+            "provisionedWriteCapacity": table.get("ProvisionedThroughput", {}).get("WriteCapacityUnits", 0),
+        }
+
+    def update_dynamodb_table(self, table_name: str, read_capacity: int, write_capacity: int) -> dict[str, Any]:
+        if not table_name:
+            raise ValueError("table_name is required")
+        if read_capacity < 1 or write_capacity < 1:
+            raise ValueError("read_capacity and write_capacity must be positive integers.")
+
+        dynamodb = self.client("dynamodb")
+        try:
+            response = dynamodb.update_table(
+                TableName=table_name,
+                ProvisionedThroughput={
+                    "ReadCapacityUnits": read_capacity,
+                    "WriteCapacityUnits": write_capacity,
+                },
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "ResourceNotFoundException":
+                raise ResourceNotFound(
+                    f"DynamoDB table {table_name!r} not found."
+                ) from exc
+            raise self._translate(exc, f"update DynamoDB table {table_name!r}") from exc
+
+        table = response.get("Table", {})
+        return {
+            "backend": self.name,
+            "table": table_name,
+            "action": "update_dynamodb_table",
+            "disruptive": True,
+            "acceptedAt": datetime.now(timezone.utc).isoformat(),
+            "newReadCapacity": read_capacity,
+            "newWriteCapacity": write_capacity,
+            "tableStatus": table.get("TableStatus", "UNKNOWN"),
+            "note": (
+                "DynamoDB accepted the capacity update. This does NOT mean "
+                "the incident is resolved - verify ThrottledRequests and "
+                "application error rate."
+            ),
+        }
+
     # -- helpers ----------------------------------------------------------
     @staticmethod
     def _translate(exc: ClientError, target: str) -> Exception:

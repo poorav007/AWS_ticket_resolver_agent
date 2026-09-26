@@ -290,6 +290,7 @@ class Ticket:
     runbook: str | None = None
     reported_at: str | None = None
     resolution: dict[str, Any] | None = None
+    dynamodb_table: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], ticket_id: str | None = None) -> "Ticket":
@@ -306,6 +307,7 @@ class Ticket:
             runbook=raw.get("runbook"),
             reported_at=_iso(raw.get("reportedAt") or raw.get("reported_at")),
             resolution=raw.get("resolution"),
+            dynamodb_table=raw.get("dynamodbTable") or raw.get("dynamodb_table"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -323,4 +325,5 @@ class Ticket:
             "runbook": self.runbook,
             "reportedAt": self.reported_at,
             "resolution": self.resolution,
+            "dynamodbTable": self.dynamodb_table,
         }
