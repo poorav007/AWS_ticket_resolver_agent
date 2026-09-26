@@ -683,6 +683,70 @@ def propose_remediation(
 
 
 @server.tool(
+    name="approve_remediation",
+    title="Record explicit human approval for a remediation proposal",
+    annotations=ToolAnnotations(**WRITE),
+)
+def approve_remediation(proposal_id: str, approved_by: str, note: str = "") -> dict[str, Any]:
+    """Mark a proposal as HUMAN_APPROVED.
+
+    This is a server-side approval checkpoint. ``execute_remediation`` refuses
+    to run unless this approval has been recorded first.
+    """
+    if not proposal_id:
+        return fail("Missing proposal_id", "Call propose_remediation first.")
+    if not approved_by or not approved_by.strip():
+        return fail(
+            "Approval required",
+            "approved_by must name the human approver. Never fabricate an approver.",
+        )
+
+    store = _load_proposals()
+    proposal = store.get(proposal_id)
+    if proposal is None:
+        return fail("Proposal not found", f"No remediation proposal with id {proposal_id!r}.")
+
+    if proposal.get("status") == "EXECUTED":
+        return fail("Already executed", f"Proposal {proposal_id} has already been executed.")
+    if proposal.get("status") == "APPROVED":
+        return ok({**proposal, "alreadyApproved": True})
+    if proposal.get("status") != "PENDING_APPROVAL":
+        return fail(
+            "Proposal not approvable",
+            f"Proposal {proposal_id} has status {proposal.get('status')!r}; expected PENDING_APPROVAL.",
+            proposal=proposal,
+        )
+
+    approved_at = _now().isoformat()
+    proposal.update(
+        {
+            "status": "APPROVED",
+            "approvedBy": approved_by.strip(),
+            "approvedAt": approved_at,
+            "approvalNote": note or None,
+        }
+    )
+    store[proposal_id] = proposal
+    _save_proposals(store)
+
+    try:
+        _tickets.update_status(
+            proposal["ticketId"],
+            "AWAITING_APPROVAL",
+            note=f"Proposal {proposal_id} explicitly approved by {approved_by}",
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("Could not update ticket status: %s", exc)
+
+    return ok(
+        {
+            **proposal,
+            "nextStep": "Now call execute_remediation with the same proposal_id.",
+        }
+    )
+
+
+@server.tool(
     name="execute_remediation",
     title="Execute an approved remediation (DISRUPTIVE)",
     annotations=ToolAnnotations(**WRITE),
@@ -727,11 +791,26 @@ def execute_remediation(proposal_id: str, approved_by: str) -> dict[str, Any]:
             f"Proposal {proposal_id} was already executed at {proposal.get('executedAt')}.",
             proposal=proposal,
         )
-    if proposal["status"] != "PENDING_APPROVAL":
+    if proposal["status"] == "PENDING_APPROVAL":
+        return fail(
+            "Not yet human-approved",
+            "Call approve_remediation(proposal_id, approved_by) first. "
+            "Execution is blocked until explicit approval is recorded server-side.",
+            proposal=proposal,
+        )
+    if proposal["status"] != "APPROVED":
         return fail(
             "Proposal not approvable",
             f"Proposal {proposal_id} has status {proposal['status']!r}; "
-            "expected PENDING_APPROVAL.",
+            "expected APPROVED.",
+            proposal=proposal,
+        )
+
+    recorded_approver = (proposal.get("approvedBy") or "").strip()
+    if recorded_approver and approved_by.strip() != recorded_approver:
+        return fail(
+            "Approver mismatch",
+            f"Proposal was approved by {recorded_approver!r}; execute_remediation must use the same approved_by.",
             proposal=proposal,
         )
 
@@ -850,6 +929,7 @@ def verify_service(
             if p.get("cluster") == cluster
             and p.get("service") == service
             and p.get("status") == "EXECUTED"
+            and p.get("action") == "force_new_deployment"
         ]
         if candidates:
             latest = max(candidates, key=lambda p: p.get("executedAt") or "")
@@ -1093,11 +1173,15 @@ def verify_dynamodb(
             minutes=max(1, minutes),
         )
         latest = series.latest
+        effective_latest = 0.0 if latest is None else float(latest)
         checks.append(
             {
                 "check": "throttledRequests",
-                "passed": latest is not None and latest <= max_throttled,
-                "detail": f"ThrottledRequests latest={latest} (limit {max_throttled})",
+                "passed": effective_latest <= max_throttled,
+                "detail": (
+                    f"ThrottledRequests latest={latest} "
+                    f"(effective={effective_latest}, limit {max_throttled})"
+                ),
             }
         )
     except ResourceNotFound as exc:

@@ -136,10 +136,6 @@ class Boto3Backend(AWSBackend):
         # Confirm the target exists first so a typo produces a clear message
         # rather than an opaque ECS exception.
         before = self.describe_ecs_service(cluster, service)
-        active = next(
-            (d for d in before.deployments if d.status == "PRIMARY"), None
-        )
-
         try:
             response = self.client("ecs").update_service(
                 cluster=cluster,
@@ -164,7 +160,9 @@ class Boto3Backend(AWSBackend):
             "action": "forceNewDeployment",
             "disruptive": True,
             "acceptedAt": datetime.now(timezone.utc).isoformat(),
-            "previousTaskDefinition": active.task_definition if active else None,
+            # Deployment model does not carry task_definition; use the
+            # service-level task definition captured before remediation.
+            "previousTaskDefinition": before.task_definition,
             "currentTaskDefinition": service_result.get("taskDefinition"),
             "deploymentId": (new_deployment or {}).get("id"),
             "desiredCount": service_result.get("desiredCount"),
@@ -297,7 +295,22 @@ class Boto3Backend(AWSBackend):
         result = results[0]
         from models import MetricPoint
 
-        points = [MetricPoint.from_aws(p) for p in result.get("Values", []) or []]
+        # get_metric_data returns timestamps and values as parallel arrays,
+        # unlike get_metric_statistics which returns datapoint dicts.
+        timestamps = result.get("Timestamps", []) or []
+        values = result.get("Values", []) or []
+        points: list[MetricPoint] = []
+        for ts, val in zip(timestamps, values):
+            points.append(
+                MetricPoint(
+                    timestamp=ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    average=float(val) if val is not None else None,
+                    maximum=float(val) if val is not None else None,
+                    minimum=float(val) if val is not None else None,
+                    sample_count=1,
+                    unit=result.get("Unit", "None"),
+                )
+            )
         points.sort(key=lambda p: p.timestamp or "")
 
         return MetricSeries(

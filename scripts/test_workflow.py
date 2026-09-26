@@ -47,10 +47,11 @@ def as_dict(result) -> dict:
 
 
 async def main() -> int:
+    backend = os.environ.get("TICKET_RESOLVER_BACKEND", "sim")
     params = StdioServerParameters(
         command=str(PROJECT_ROOT / ".venv" / "bin" / "python"),
         args=[str(PROJECT_ROOT / "mcp-server" / "server.py")],
-        env={**os.environ, "TICKET_RESOLVER_BACKEND": "sim"},
+        env={**os.environ, "TICKET_RESOLVER_BACKEND": backend},
     )
 
     async with Client(params) as client:
@@ -58,11 +59,11 @@ async def main() -> int:
         names = sorted(t.name for t in tools.tools)
         print(f"\nConnected. {len(names)} tools exposed:\n  {', '.join(names)}\n")
 
-        check("tools exposed", len(names) >= 11, f"{len(names)} tools")
+        check("tools exposed", len(names) >= 12, f"{len(names)} tools")
         for required in (
             "get_ticket", "get_ecs_services", "get_ecs_service_health",
             "get_ecs_deployments", "get_recent_logs", "get_cloudwatch_metrics",
-            "propose_remediation", "execute_remediation", "verify_service",
+            "propose_remediation", "approve_remediation", "execute_remediation", "verify_service",
             "verify_dynamodb", "update_ticket",
         ):
             check(f"tool {required}", required in names)
@@ -161,6 +162,16 @@ async def main() -> int:
         check("proposal pending approval",
               proposal.get("data", {}).get("status") == "PENDING_APPROVAL", pid)
 
+        blocked = as_dict(await client.call_tool(
+            "execute_remediation", {"proposal_id": pid, "approved_by": "oncall@example.com"}))
+        check("execute blocked before explicit approval", blocked.get("success") is False,
+              blocked.get("error", ""))
+
+        approved = as_dict(await client.call_tool(
+            "approve_remediation", {"proposal_id": pid, "approved_by": "oncall@example.com"}))
+        check("proposal approved", approved.get("success") is True)
+        check("proposal status APPROVED", approved.get("data", {}).get("status") == "APPROVED")
+
         ticket_state = as_dict(await client.call_tool("get_ticket", {"ticket_id": "INC-1001"}))
         check("ticket awaiting approval",
               ticket_state.get("data", {}).get("status") == "AWAITING_APPROVAL",
@@ -242,6 +253,16 @@ async def main() -> int:
         dyn_pid = dyn_proposal.get("data", {}).get("proposalId", "")
         check("DynamoDB proposal pending approval",
               dyn_proposal.get("data", {}).get("status") == "PENDING_APPROVAL", dyn_pid)
+
+        dyn_blocked = as_dict(await client.call_tool(
+            "execute_remediation", {"proposal_id": dyn_pid, "approved_by": "oncall@example.com"}))
+        check("DynamoDB execute blocked before explicit approval", dyn_blocked.get("success") is False,
+              dyn_blocked.get("error", ""))
+
+        dyn_approved = as_dict(await client.call_tool(
+            "approve_remediation", {"proposal_id": dyn_pid, "approved_by": "oncall@example.com"}))
+        check("DynamoDB proposal approved", dyn_approved.get("success") is True)
+        check("DynamoDB proposal status APPROVED", dyn_approved.get("data", {}).get("status") == "APPROVED")
 
         # Verify BEFORE remediation (must NOT verify)
         dyn_no_verify = as_dict(await client.call_tool("verify_dynamodb", {

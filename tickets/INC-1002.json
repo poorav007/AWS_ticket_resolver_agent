@@ -5,7 +5,7 @@
   "service": "payment-api",
   "cluster": "hackathon-cluster",
   "dynamodbTable": "payments-transactions",
-  "status": "OPEN",
+  "status": "RESOLVED",
   "reportedAt": "2026-09-26T09:00:00+00:00",
   "description": "The payments-transactions DynamoDB table is returning ProvisionedThroughputExceededException errors. The payment API is failing with 500 errors when writing transaction records.",
   "symptoms": [
@@ -15,8 +15,44 @@
     "CloudWatch ThrottledRequests metric elevated"
   ],
   "runbook": "dynamodb-throttling",
-  "updatedAt": "2026-09-26T09:00:00+00:00",
-  "history": [],
+  "updatedAt": "2026-09-26T11:43:26.423037+00:00",
+  "history": [
+    {
+      "at": "2026-09-26T11:37:47.726060+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: update_dynamodb_table (prop-707b32870620)"
+    },
+    {
+      "at": "2026-09-26T11:37:47.730246+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-707b32870620 executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T11:37:47.733413+00:00",
+      "status": "RESOLVED",
+      "note": "Increased payments-transactions DynamoDB provisioned capacity to 100 read / 100 write."
+    },
+    {
+      "at": "2026-09-26T11:42:14.142675+00:00",
+      "status": "INVESTIGATING",
+      "note": "Controlled incident induced: DynamoDB set to PROVISIONED 1/1 and write burst generated throttling exceptions."
+    },
+    {
+      "at": "2026-09-26T11:42:16.002527+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: update_dynamodb_table (prop-351500b37fd2)"
+    },
+    {
+      "at": "2026-09-26T11:43:10.402102+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-351500b37fd2 executed by Vishnu Sharma"
+    },
+    {
+      "at": "2026-09-26T11:43:26.423037+00:00",
+      "status": "RESOLVED",
+      "note": "Post-remediation verification passed for DynamoDB throttling scenario."
+    }
+  ],
   "awsResources": {
     "dynamodbTable": "payments-transactions",
     "tableArn": "arn:aws:dynamodb:us-east-1:607987767231:table/payments-transactions"
@@ -29,5 +65,12 @@
     },
     "currentValue": 847,
     "baselineValue": 12
+  },
+  "resolution": {
+    "rootCause": "Provisioned throughput was too low (1/1), causing throttling under burst writes.",
+    "remediation": "update_dynamodb_table",
+    "newReadCapacity": 100,
+    "newWriteCapacity": 100,
+    "verifiedBy": "verify_dynamodb"
   }
 }
