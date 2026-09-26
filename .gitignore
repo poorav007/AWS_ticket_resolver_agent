@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Secrets - never commit credentials
+.env
+.env.*
+!.env.example
+*.pem
+.aws/
+
+# Mutable runtime state (simulated AWS account, remediation proposals)
+state/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

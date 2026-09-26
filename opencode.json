@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md", "runbooks/*.md"],
+  "mcp": {
+    "ticket-resolver-aws": {
+      "type": "local",
+      "command": [".venv/bin/python", "mcp-server/server.py"],
+      "cwd": ".",
+      "environment": {
+        "TICKET_RESOLVER_BACKEND": "sim"
+      },
+      "timeout": 30000
+    }
+  }
+}

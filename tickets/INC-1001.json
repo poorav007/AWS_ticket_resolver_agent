@@ -1,0 +1,111 @@
+{
+  "id": "INC-1001",
+  "title": "Payment API returning 500 errors",
+  "severity": "SEV-2",
+  "service": "payment-api",
+  "cluster": "hackathon-cluster",
+  "logGroup": "/ecs/payment-api",
+  "status": "OPEN",
+  "reportedAt": "2026-09-26T07:55:00+00:00",
+  "description": "Customers are receiving HTTP 500 errors from the payment API. Support has received multiple reports of failed charges in the last 30 minutes. Error rate is climbing and on-call has been paged.",
+  "symptoms": [
+    "HTTP 500 errors on /api/v1/payments/charge",
+    "error rate increasing",
+    "unhealthy service",
+    "circuit breaker open"
+  ],
+  "runbook": "api-500",
+  "updatedAt": "2026-09-26T08:27:11.270804+00:00",
+  "history": [
+    {
+      "at": "2026-09-26T08:17:00.530528+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: force_new_deployment (prop-be3e54a7dcc7)"
+    },
+    {
+      "at": "2026-09-26T08:17:00.537127+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-be3e54a7dcc7 executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T08:17:00.541779+00:00",
+      "status": "RESOLVED",
+      "note": "Rolled payment-api onto a corrected task definition via ecs:UpdateService."
+    },
+    {
+      "at": "2026-09-26T08:19:19.319806+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: force_new_deployment (prop-fbb57df4ae95)"
+    },
+    {
+      "at": "2026-09-26T08:19:19.326449+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-fbb57df4ae95 executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T08:19:19.331300+00:00",
+      "status": "RESOLVED",
+      "note": "Rolled payment-api onto a corrected task definition via ecs:UpdateService."
+    },
+    {
+      "at": "2026-09-26T08:19:44.364139+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: force_new_deployment (prop-d54bc67f9296)"
+    },
+    {
+      "at": "2026-09-26T08:19:44.370873+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-d54bc67f9296 executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T08:19:44.376692+00:00",
+      "status": "RESOLVED",
+      "note": "Rolled payment-api onto a corrected task definition via ecs:UpdateService."
+    },
+    {
+      "at": "2026-09-26T08:19:55.316065+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: force_new_deployment (prop-56a3dc2bb8ff)"
+    },
+    {
+      "at": "2026-09-26T08:19:55.322845+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-56a3dc2bb8ff executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T08:19:55.327938+00:00",
+      "status": "RESOLVED",
+      "note": "Rolled payment-api onto a corrected task definition via ecs:UpdateService."
+    },
+    {
+      "at": "2026-09-26T08:21:18.162189+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: force_new_deployment (prop-a6b345128eb7)"
+    },
+    {
+      "at": "2026-09-26T08:21:18.168900+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-a6b345128eb7 executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T08:21:18.173450+00:00",
+      "status": "RESOLVED",
+      "note": "Rolled payment-api onto a corrected task definition via ecs:UpdateService."
+    },
+    {
+      "at": "2026-09-26T08:27:11.259230+00:00",
+      "status": "AWAITING_APPROVAL",
+      "note": "Remediation proposed: force_new_deployment (prop-50751f8a4068)"
+    },
+    {
+      "at": "2026-09-26T08:27:11.266005+00:00",
+      "status": "REMEDIATING",
+      "note": "Remediation prop-50751f8a4068 executed by oncall@example.com"
+    },
+    {
+      "at": "2026-09-26T08:27:11.270804+00:00",
+      "status": "RESOLVED",
+      "note": "Rolled payment-api onto a corrected task definition via ecs:UpdateService."
+    }
+  ]
+}

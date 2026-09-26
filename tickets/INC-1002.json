@@ -1,0 +1,18 @@
+{
+  "id": "INC-1002",
+  "title": "Order API latency spike and high CPU",
+  "severity": "SEV-3",
+  "service": "order-api",
+  "cluster": "hackathon-cluster",
+  "logGroup": "/ecs/order-api",
+  "status": "OPEN",
+  "reportedAt": "2026-09-26T06:30:00+00:00",
+  "description": "Order API p95 latency has tripled over the last hour and CPU utilization is above 90%. Checkout conversions are dropping. No deploy has been made in the last four hours.",
+  "symptoms": [
+    "high cpu",
+    "cpu utilization",
+    "latency",
+    "slow responses"
+  ],
+  "runbook": "high-cpu"
+}

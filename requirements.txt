@@ -1,0 +1,10 @@
+# Ticket Resolver - Python dependencies
+# Kept intentionally minimal for the hackathon MVP.
+
+# MCP Python SDK v2.x
+# NOTE: in mcp>=2.0 FastMCP was renamed to MCPServer (mcp.server.mcpserver).
+# Do not downgrade below 2.0 without also updating mcp-server/server.py.
+mcp>=2.2.0
+
+# AWS SDK
+boto3>=1.43.0
